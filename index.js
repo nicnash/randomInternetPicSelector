@@ -1,21 +1,26 @@
-// const fs = require('fs').promises;
-const path = require("path");
-const process = require("process");
-const { authenticate } = require("@google-cloud/local-auth");
-const { google } = require("googleapis");
-const express = require("express");
-const fs = require("fs");
-const util = require("util");
-
+// const fs = require("fs").promises;
+import fs from "fs/promises";
+// const path = require("path");
+import path from "path";
+// const process = require("process");
+import process from "process";
+// const { authenticate } = require("@google-cloud/local-auth");
+import { authenticate } from "@google-cloud/local-auth";
+// const { google } = require("googleapis");
+// const express = require("express");
+import express from "express";
+import { google } from "googleapis";
+// const chalk = require("chalk");
+import chalk from "chalk";
 // If modifying these scopes, delete token.json.
-const SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"];
-const FOLDER_ID = "12eMATT8B2JEUpVnaPZDNzxNnhfY3471F";
+const SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly", "https://www.googleapis.com/auth/drive.readonly"];
 // The file token.json stores the user's access and refresh tokens, and is
 // created automatically when the authorization flow completes for the first
 // time.
 const TOKEN_PATH = path.join(process.cwd(), "token.json");
 const CREDENTIALS_PATH = path.join(process.cwd(), "credentials.json");
 
+const FOLDER_ID = "12eMATT8B2JEUpVnaPZDNzxNnhfY3471F";
 /**
  * Reads previously authorized credentials from the save file.
  *
@@ -38,7 +43,7 @@ async function loadSavedCredentialsIfExist() {
  * @return {Promise<void>}
  */
 async function saveCredentials(client) {
-  const content = await fs.promises.readFile(CREDENTIALS_PATH);
+  const content = await fs.readFile(CREDENTIALS_PATH);
   const keys = JSON.parse(content);
   const key = keys.installed || keys.web;
   const payload = JSON.stringify({
@@ -47,7 +52,7 @@ async function saveCredentials(client) {
     client_secret: key.client_secret,
     refresh_token: client.credentials.refresh_token,
   });
-  await fs.promises.writeFile(TOKEN_PATH, payload);
+  await fs.writeFile(TOKEN_PATH, payload);
 }
 
 /**
@@ -57,6 +62,7 @@ async function saveCredentials(client) {
 async function authorize() {
   let client = await loadSavedCredentialsIfExist();
   if (client) {
+    // console.log(client);
     return client;
   }
   client = await authenticate({
@@ -76,104 +82,95 @@ async function authorize() {
 async function listFiles(authClient) {
   const drive = google.drive({ version: "v3", auth: authClient });
   const res = await drive.files.list({
-    pageSize: 10,
-    fields: "nextPageToken, files(id, name)",
+    pageSize: 1000,
+    fields: "nextPageToken, files(id, name, mimeType)",
     q: `'${FOLDER_ID}' in parents`, // Add this line
   });
+
   const files = res.data.files;
   if (files.length === 0) {
     console.log("No files found.");
     return;
   }
 
-  console.log("Files:");
-  files.map((file) => {
-    // downloadFile(authClient, file.id, file.name);
-    console.log(`${file.name} (${file.id})`);
-  });
-  console.log('---------------------------------');
-  return files;
+  //   console.log("Files:");
+  return files.map((file) => ({ id: file.id, mimeType: file.mimeType }));
 }
-
-
-
-async function getFolderId(authClient, folderName) {
-  const drive = google.drive({ version: "v3", auth: authClient });
-  const res = await drive.files.list({
-    pageSize: 10,
-    fields: "nextPageToken, files(id, name)",
-    q: `mimeType='application/vnd.google-apps.folder' and name='${folderName}'`,
-  });
-  const files = res.data.files;
-  if (files.length === 0) {
-    console.log("No folders found.");
-    return;
-  }
-
-  console.log("Folders:");
-  files.map((file) => {
-    console.log(`${file.name} (${file.id})`);
-  });
-
-  // Return the ID of the first folder found
-  return files[0].id;
-}
-// console.log(authClient);
-// authorize().then(listFiles).catch(console.error);
-// authorize().then(authClient => getFolderId(authClient, 'internet pictures')).catch(console.error);
-
-authorize()
-  .then((authClient) => {
-    listFiles(authClient);
-  })
-  .catch(console.error);
-
-// Create a new express application
-const app = express();
-const port = 3000;
-
-app.get('/', async (req, res) => {
-  const files = await authorize().then(listFiles).catch(console.error);
-  res.send(files.map(file => `${file.name} (${file.id})`).join('<br>'));
-});
-
-// const pipeline = util.promisify(require("stream").pipeline);
-// async function downloadFile(authClient, fileId, destination) {
-//   console.log(`Downloading file ${fileId} to`, destination);
+// async function listFiles(authClient, folderId = FOLDER_ID) {
 //   const drive = google.drive({ version: "v3", auth: authClient });
-//   const res = await drive.files.get(
-//     {
-//       fileId: fileId,
-//       alt: "media",
-//     },
-//     { responseType: "stream" }
-//   );
+//   const res = await drive.files.list({
+//     pageSize: 1000,
+//     fields: "nextPageToken, files(id, name, mimeType)",
+//     q: `'${folderId}' in parents`,
+//   });
+//   const files = res.data.files;
+//   if (files.length === 0) {
+//     console.log("No files found.");
+//     return [];
+//   }
 
-//   await pipeline(res.data, fs.createWriteStream(destination));
+//   let allFiles = [];
+//   for (const file of files) {
+//     allFiles.push(file);
+//     if (file.mimeType === "application/vnd.google-apps.folder") {
+//       const subFiles = await listFiles(authClient, file.id);
+//       allFiles = allFiles.concat(subFiles);
+//     }
+//   }
+//   return allFiles;
 // }
 
-// app.get("/", async (req, res) => {
-//   let authClient;
-//   // const files = await authorize().then(listFiles).catch(console.error);
-//   const files = await authorize().then(listFiles).catch(console.error);
-//   // const files = await authorize()
-//   //   .then((ac) => {
-//   //     console.log(ac);
-//   //     authClient = ac;
-//   //     listFiles(ac);
-//   //   })
-//   //   .catch(console.error);
-//   // const files =
-//   let html = "";
-//   // for (let file of files) {
-//   // console.log(files);
-//   const file = files[0];
-//   const content = await downloadFile(authClient, file.id, "/tmp/" + file.name);
-//   html += `<h2>${file.name} (${file.id})</h2><pre>${content}</pre>`;
-//   // }
-//   res.send(html);
-// });
+const displayFile = async (authClient, fileId) => {
+  const drive = google.drive({ version: "v3", auth: authClient });
 
-// app.listen(port, () => {
-//   console.log(`Server running at http://localhost:${port}/`);
-// });
+  const driveResponse = await drive.files.get(
+    {
+      fileId: fileId,
+      alt: "media",
+    },
+    { responseType: "stream" }
+  );
+
+  // const metadata = driveResponse.data;
+  // res.set({
+  //     "Content-Type": metadata.mimeType,
+  //     "Content-Length": metadata.size,
+  //     "Content-Disposition": `attachment; filename="${metadata.name}"`,
+  // });
+  // return driveResponse;
+
+  //   driveResponse.data
+  //     .on("error", (err) => {
+  //       console.error("Error downloading file.");
+  //       res.status(500).send(err.toString());
+  //     })
+  //     .pipe(res);
+  return driveResponse;
+};
+
+async function main() {
+  const client = await authorize();
+  const app = express();
+  app.get("/", async (req, res, next) => {
+    const files = await listFiles(client);
+    console.log(files);
+    const randomIndex = Math.floor(Math.random() * files.length);
+    // console.log(halk.(randomIndex));
+    console.log(chalk.bgGreenBright("Random index: ", randomIndex));
+
+    const { id, mimeType } = files[randomIndex];
+    console.log(chalk.bgGreenBright("mimeType : ", mimeType));
+
+    const response = await displayFile(client, id);
+    res.setHeader("Content-Type", mimeType);
+    
+    
+    response.data.pipe(res);
+    
+    // return res.status(200).send(response);
+  });
+
+  app.listen(3000);
+}
+
+main();
