@@ -1,16 +1,9 @@
-// const fs = require("fs").promises;
 import fs from "fs/promises";
-// const path = require("path");
 import path from "path";
-// const process = require("process");
 import process from "process";
-// const { authenticate } = require("@google-cloud/local-auth");
 import { authenticate } from "@google-cloud/local-auth";
-// const { google } = require("googleapis");
-// const express = require("express");
-import express from "express";
+import express, { response } from "express";
 import { google } from "googleapis";
-// const chalk = require("chalk");
 import chalk from "chalk";
 // If modifying these scopes, delete token.json.
 const SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly", "https://www.googleapis.com/auth/drive.readonly"];
@@ -94,7 +87,7 @@ async function listFiles(authClient) {
   }
 
   //   console.log("Files:");
-  return files.map((file) => ({ id: file.id, mimeType: file.mimeType }));
+  return files.filter((file) => file.mimeType === "video/mp4").map((file) => ({ id: file.id, mimeType: file.mimeType }));
 }
 // async function listFiles(authClient, folderId = FOLDER_ID) {
 //   const drive = google.drive({ version: "v3", auth: authClient });
@@ -120,17 +113,20 @@ async function listFiles(authClient) {
 //   return allFiles;
 // }
 
-const displayFile = async (authClient, fileId) => {
+const getLink = async (authClient, fileId) => {
   const drive = google.drive({ version: "v3", auth: authClient });
 
   const driveResponse = await drive.files.get(
     {
       fileId: fileId,
-      alt: "media",
-    },
-    { responseType: "stream" }
+      //   alt: "media",
+      fields: "webContentLink",
+    }
+    // { responseType: "stream" }
   );
-
+  //   console.log(JSON.stringify(driveResponse,'\t'));
+  console.log(driveResponse.data.webContentLink);
+  const directLink = driveResponse.data.webContentLink;
   // const metadata = driveResponse.data;
   // res.set({
   //     "Content-Type": metadata.mimeType,
@@ -145,7 +141,7 @@ const displayFile = async (authClient, fileId) => {
   //       res.status(500).send(err.toString());
   //     })
   //     .pipe(res);
-  return driveResponse;
+  return directLink;
 };
 
 async function main() {
@@ -161,12 +157,34 @@ async function main() {
     const { id, mimeType } = files[randomIndex];
     console.log(chalk.bgGreenBright("mimeType : ", mimeType));
 
-    const response = await displayFile(client, id);
-    res.setHeader("Content-Type", mimeType);
-    
-    
-    response.data.pipe(res);
-    
+    let directLink = await getLink(client, id);
+    directLink = directLink.replace("&export=download", "");
+    // res.setHeader("Accept-Ranges", 'bytes'); need to enable and fix
+    console.log("dl2", directLink);
+
+    let headers = {};
+    console.log(req.headers);
+    if (req.headers["range"]) {
+      headers["Range"] = req.headers.range;
+    }
+
+    fetch(directLink, { headers: headers }).then(async (response) => {
+      console.log('response', response.headers);
+      console.log('req', req.headers);
+      res.setHeader("content-type", response.headers["content-type"] || mimeType);
+
+      if (response.headers["content-range"]) {
+        res.setHeader("content-range", response.headers["content-range"]);
+      }
+
+      if (response.headers["content-length"]) {
+        res.setHeader("content-length", response.headers["content-length"]);
+      }
+
+      res.end(Buffer.from(await response.arrayBuffer(), "binary"));
+      //   response.body.pipe(res);
+    });
+
     // return res.status(200).send(response);
   });
 
