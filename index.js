@@ -1,19 +1,22 @@
+import { authenticate } from "@google-cloud/local-auth";
+import express from "express";
 import fs from "fs/promises";
+import { google } from "googleapis";
 import path from "path";
 import process from "process";
-import { authenticate } from "@google-cloud/local-auth";
-import express, { response } from "express";
-import { google } from "googleapis";
-import chalk from "chalk";
+
 // If modifying these scopes, delete token.json.
-const SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly", "https://www.googleapis.com/auth/drive.readonly"];
+const SCOPES = [
+  "https://www.googleapis.com/auth/drive.metadata.readonly",
+  "https://www.googleapis.com/auth/drive.readonly",
+];
+const FOLDER_ID = "12eMATT8B2JEUpVnaPZDNzxNnhfY3471F";
 // The file token.json stores the user's access and refresh tokens, and is
 // created automatically when the authorization flow completes for the first
 // time.
 const TOKEN_PATH = path.join(process.cwd(), "token.json");
 const CREDENTIALS_PATH = path.join(process.cwd(), "credentials.json");
 
-const FOLDER_ID = "12eMATT8B2JEUpVnaPZDNzxNnhfY3471F";
 /**
  * Reads previously authorized credentials from the save file.
  *
@@ -55,7 +58,6 @@ async function saveCredentials(client) {
 async function authorize() {
   let client = await loadSavedCredentialsIfExist();
   if (client) {
-    // console.log(client);
     return client;
   }
   client = await authenticate({
@@ -76,119 +78,156 @@ async function listFiles(authClient) {
   const drive = google.drive({ version: "v3", auth: authClient });
   const res = await drive.files.list({
     pageSize: 1000,
-    fields: "nextPageToken, files(id, name, mimeType)",
+    fields: "nextPageToken, files(id, name, mimeType, webContentLink, size)",
     q: `'${FOLDER_ID}' in parents`, // Add this line
-  });
-
+});
   const files = res.data.files;
-  if (files.length === 0) {
-    console.log("No files found.");
-    return;
+
+  return files
+    .filter(
+      (file) =>
+        file.mimeType.startsWith("video") || file.mimeType.startsWith("image")
+    )
+    .map((file) => ({
+      id: file.id,
+      mimeType: file.mimeType,
+      link: file.webContentLink?.replace("&export=download", ""),
+      size: +file.size,
+    }));
+}
+
+function randomIntFromInterval(min, max) {
+  // min and max included
+  return Math.floor(Math.random() * (max - min + 1) + min);
+}
+
+const MB = 1024 * 1024;
+const CHUNK_SIZE = MB * 1;
+let files = {};
+async function main() {
+  const auth = await authorize();
+  const filesArray = await listFiles(auth);
+
+  for (const f of filesArray) {
+    files[f.id] = f;
   }
 
-  //   console.log("Files:");
-  return files.filter((file) => file.mimeType === "video/mp4").map((file) => ({ id: file.id, mimeType: file.mimeType }));
-}
-// async function listFiles(authClient, folderId = FOLDER_ID) {
-//   const drive = google.drive({ version: "v3", auth: authClient });
-//   const res = await drive.files.list({
-//     pageSize: 1000,
-//     fields: "nextPageToken, files(id, name, mimeType)",
-//     q: `'${folderId}' in parents`,
-//   });
-//   const files = res.data.files;
-//   if (files.length === 0) {
-//     console.log("No files found.");
-//     return [];
-//   }
-
-//   let allFiles = [];
-//   for (const file of files) {
-//     allFiles.push(file);
-//     if (file.mimeType === "application/vnd.google-apps.folder") {
-//       const subFiles = await listFiles(authClient, file.id);
-//       allFiles = allFiles.concat(subFiles);
-//     }
-//   }
-//   return allFiles;
-// }
-
-const getLink = async (authClient, fileId) => {
-  const drive = google.drive({ version: "v3", auth: authClient });
-
-  const driveResponse = await drive.files.get(
-    {
-      fileId: fileId,
-      //   alt: "media",
-      fields: "webContentLink",
-    }
-    // { responseType: "stream" }
-  );
-  //   console.log(JSON.stringify(driveResponse,'\t'));
-  console.log(driveResponse.data.webContentLink);
-  const directLink = driveResponse.data.webContentLink;
-  // const metadata = driveResponse.data;
-  // res.set({
-  //     "Content-Type": metadata.mimeType,
-  //     "Content-Length": metadata.size,
-  //     "Content-Disposition": `attachment; filename="${metadata.name}"`,
-  // });
-  // return driveResponse;
-
-  //   driveResponse.data
-  //     .on("error", (err) => {
-  //       console.error("Error downloading file.");
-  //       res.status(500).send(err.toString());
-  //     })
-  //     .pipe(res);
-  return directLink;
-};
-
-async function main() {
-  const client = await authorize();
   const app = express();
-  app.get("/", async (req, res, next) => {
-    const files = await listFiles(client);
-    console.log(files);
-    const randomIndex = Math.floor(Math.random() * files.length);
-    // console.log(halk.(randomIndex));
-    console.log(chalk.bgGreenBright("Random index: ", randomIndex));
 
-    const { id, mimeType } = files[randomIndex];
-    console.log(chalk.bgGreenBright("mimeType : ", mimeType));
-
-    let directLink = await getLink(client, id);
-    directLink = directLink.replace("&export=download", "");
-    // res.setHeader("Accept-Ranges", 'bytes'); need to enable and fix
-    console.log("dl2", directLink);
-
-    let headers = {};
-    console.log(req.headers);
-    if (req.headers["range"]) {
-      headers["Range"] = req.headers.range;
-    }
-
-    fetch(directLink, { headers: headers }).then(async (response) => {
-      console.log('response', response.headers);
-      console.log('req', req.headers);
-      res.setHeader("content-type", response.headers["content-type"] || mimeType);
-
-      if (response.headers["content-range"]) {
-        res.setHeader("content-range", response.headers["content-range"]);
-      }
-
-      if (response.headers["content-length"]) {
-        res.setHeader("content-length", response.headers["content-length"]);
-      }
-
-      res.end(Buffer.from(await response.arrayBuffer(), "binary"));
-      //   response.body.pipe(res);
-    });
-
-    // return res.status(200).send(response);
+  app.get("/", async (req, res) => {
+    const keys = Object.keys(files);
+    const randomKey = keys[randomIntFromInterval(0, keys.length - 1)];
+    const randomFile = files[randomKey];
+    console.log(randomFile);
+    res.setHeader("Content-Type", "text/html");
+    const isVideo = randomFile.mimeType.startsWith("video");
+    const tag = isVideo
+      ? `<video controls playsinlne autoplay src="/resource/${randomFile.id}"></video>`
+      : `<img src="/resource/${randomFile.id}"/>`;
+    return res.status(200).send(`<!DOCTYPE html>
+      <html lang="en">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+          <title>Document</title>
+          <style>
+            * {
+              margin: 0;
+              padding: 0;
+              box-sizing: border-box;
+            }
+            body {
+              display: flex;
+              height: 100vh;
+              justify-content: space-between;
+              align-items: center;
+              flex-direction: column;
+              padding: 1rem;
+            }
+            img {
+              height: 100%;
+              width: 100%;
+              margin-bottom: 2rem;
+              object-fit: contain;
+            }
+            video {
+                max-height: 90vh;
+            }
+          </style>
+        </head>
+        <body>
+            \n
+          ${tag}
+          \n
+          <form action="/">
+            <button type="submit">Next</button>
+          </form>
+        </body>
+      </html>`);
   });
-
-  app.listen(3000);
+  app.get("/resource/:id", async (req, res) => {
+    const id = req.params.id;
+    if (!id) return res.status(404).end();
+    const fileData = files[id];
+    if (!fileData) return res.status(404).end();
+    if (fileData.mimeType.startsWith("image")) {
+      return getImage(auth, fileData, res);
+    } else {
+      return getVideo(auth, fileData, res, req.headers.range);
+    }
+  });
+  app.listen(3000, () => {
+    console.log("READY http://localhost:3000");
+  });
 }
-
 main();
+async function getImage(auth, file, res) {
+  google.drive({ version: "v3", auth }).files.get(
+    {
+      fileId: file.id,
+      alt: "media",
+    },
+    {
+      responseType: "stream",
+    },
+    (err, response) => {
+      if (err) throw err;
+      res.setHeader("Content-Type", file.mimeType);
+      res.setHeader("Content-Length", file.size);
+      response.data
+        .on("end", () => {
+          res.end();
+        })
+        .pipe(res);
+    }
+  );
+}
+async function getVideo(auth, file, res, range) {
+  const start = Number(range.replace(/\D/g, ""));
+  const end = Math.min(start + CHUNK_SIZE, file.size - 1);
+  google.drive({ version: "v3", auth }).files.get(
+    {
+      fileId: file.id,
+      alt: "media",
+    },
+    {
+      responseType: "stream",
+      headers: { Range: `bytes=${start}-${end}` },
+    },
+    (err, response) => {
+      if (err) throw err;
+      const headers = {
+        "Content-Range": response.headers["content-range"],
+        "Content-Length": response.headers["content-length"],
+        "Content-Type": response.headers["content-type"],
+      };
+      res.writeHead(response.status, headers);
+      response.data
+        .on("end", () => {
+          console.log("downloaded data", response.headers["content-length"]);
+          res.end();
+        })
+        .pipe(res);
+    }
+  );
+}
